@@ -2,10 +2,13 @@ fastapi
 uvicorn[standard]
 SQLAlchemy
 psycopg2-binary
-pydantic
 python-jose[cryptography]
-passlib[bcrypt]
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-dotenv
 alembic
 httpx
 python-multipart
+pydantic>=2.0,<3.0
+pydantic-settings
+email-validator
