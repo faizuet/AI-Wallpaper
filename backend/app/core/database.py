@@ -1,26 +1,25 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-from app.core.config import settings  # import the Settings object
+from app.core.config import settings
 
-# Create SQLAlchemy engine
+# SQLAlchemy engine
 engine = create_engine(
     settings.DATABASE_URI,
-    echo=True,  # set to False in production to reduce log noise
-    future=True  # enables SQLAlchemy 2.0 style
+    echo=False
 )
 
-# Session factory
+# Session factory (used per request in FastAPI)
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine
 )
 
-# Base class for models
+# Base class for ORM models
 Base = declarative_base()
 
-# Dependency for FastAPI routes
 def get_db():
+    """FastAPI dependency that provides a database session and ensures closure after request."""
     db = SessionLocal()
     try:
         yield db

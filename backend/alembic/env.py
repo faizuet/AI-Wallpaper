@@ -52,7 +52,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,  # important for detecting Enum/UUID changes
+            compare_type=True,
         )
 
         with context.begin_transaction():
@@ -63,5 +63,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-
 

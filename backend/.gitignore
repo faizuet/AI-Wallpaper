@@ -1,0 +1,41 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+ENV/
+env/
+*.env
+.env
+
+# PyCharm project files
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Alembic migration cache
+alembic/versions/
+
+# Python egg and build artifacts
+*.egg-info/
+dist/
+build/
+
+# Static/media files (optional if generated or large)
+static/
+
+# Database files (if using SQLite locally)
+*.db
+
+# Test coverage reports
+htmlcov/
+.coverage
+.cache/

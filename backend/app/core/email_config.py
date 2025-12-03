@@ -1,18 +1,21 @@
-import os
-from dotenv import load_dotenv
 from fastapi_mail import ConnectionConfig
+from app.core.config import settings
 
-load_dotenv()
+
+"""
+Email configuration for FastAPI-Mail.
+Values are loaded and validated from .env via Settings.
+"""
 
 MAIL_CONFIG = ConnectionConfig(
-    MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
-    MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
-    MAIL_FROM=os.getenv("MAIL_FROM"),
-    MAIL_FROM_NAME=os.getenv("MAIL_FROM_NAME", "AI-Wallpaper App"),
-    MAIL_PORT=int(os.getenv("MAIL_PORT", 587)),
-    MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com"),
-    MAIL_STARTTLS=os.getenv("MAIL_TLS", "true").lower() == "true",
-    MAIL_SSL_TLS=os.getenv("MAIL_SSL", "false").lower() == "true",
+    MAIL_USERNAME=settings.MAIL_USERNAME,
+    MAIL_PASSWORD=settings.MAIL_PASSWORD,
+    MAIL_FROM=settings.MAIL_FROM,
+    MAIL_FROM_NAME=settings.MAIL_FROM_NAME,
+    MAIL_PORT=settings.MAIL_PORT,
+    MAIL_SERVER=settings.MAIL_SERVER,
+    MAIL_STARTTLS=settings.MAIL_TLS,
+    MAIL_SSL_TLS=settings.MAIL_SSL,
     USE_CREDENTIALS=True,
     VALIDATE_CERTS=True,
 )
