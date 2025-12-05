@@ -12,6 +12,7 @@ from pydantic import (
     model_validator,
     ValidationError,
     StringConstraints,
+    validator,
 )
 from typing import Optional, Annotated, List
 from uuid import UUID
@@ -259,15 +260,32 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     refresh_token: Optional[str] = None
 
-
 # ---------------------------
 # Wallpaper Schemas
 # ---------------------------
 
 class WallpaperCreateSchema(BaseModel):
-    prompt: str = Field(..., min_length=3, description="Text prompt describing the wallpaper to generate")
-    size: str = Field(..., description="Image size option (e.g. '1:1', '2:3 Portrait', '2:3 Landscape')")
-    style: str = Field(..., description="Art style option (e.g. 'Colorful', '3D Render', 'Nature')")
+    prompt: str = Field(
+        ...,
+        min_length=3,
+        max_length=255,
+        description="Text prompt describing the wallpaper to generate (max 255 characters)"
+    )
+    size: str = Field(
+        ...,
+        description="Image size option (e.g. '1:1', '2:3 Portrait', '2:3 Landscape')"
+    )
+    style: str = Field(
+        ...,
+        description="Art style option (e.g. 'Colorful', '3D Render', 'Nature')"
+    )
+
+    @validator("prompt")
+    def validate_prompt_length(cls, v):
+        if len(v) > 255:
+            # This triggers your custom RequestValidationError handler
+            raise ValueError("Prompt is too long. Please keep it under 255 characters.")
+        return v
 
     class Config:
         json_schema_extra = {
@@ -278,19 +296,11 @@ class WallpaperCreateSchema(BaseModel):
             }
         }
 
-
 class WallpaperResponseSchema(BaseModel):
     id: UUID
     prompt: str
     size: str
     style: str
-    status: WallpaperStatusEnum
-    image_url: Optional[str] = Field(
-        None, description="Relative path to the generated image (e.g. static/wallpapers/filename.png)"
-    )
-    full_image_url: Optional[str] = Field(
-        None, description="Absolute URL to the generated image, useful for mobile/Flutter clients"
-    )
     created_at: datetime
 
     class Config:
@@ -301,8 +311,6 @@ class WallpaperResponseSchema(BaseModel):
                 "size": "2:3 Portrait",
                 "style": "3D Render",
                 "status": "completed",
-                "image_url": "static/wallpapers/panda.png",
-                "full_image_url": "http://localhost:8000/static/wallpapers/panda.png",
                 "created_at": "2025-11-27T11:45:00"
             }
         }
@@ -313,9 +321,13 @@ class WallpaperListSchema(BaseModel):
 
 
 class WallpaperDeleteResponse(BaseModel):
-    message: str = Field(..., description="Confirmation message after deletion")
+    message: str = Field(
+        ...,
+        description="Confirmation message after deletion"
+    )
     deleted_wallpaper: Optional[WallpaperResponseSchema] = Field(
-        None, description="Details of the deleted wallpaper, if available"
+        None,
+        description="Details of the deleted wallpaper"
     )
 
     class Config:
@@ -328,8 +340,6 @@ class WallpaperDeleteResponse(BaseModel):
                     "size": "2:3 Portrait",
                     "style": "3D Render",
                     "status": "completed",
-                    "image_url": "static/wallpapers/panda.png",
-                    "full_image_url": "http://localhost:8000/static/wallpapers/panda.png",
                     "created_at": "2025-11-27T11:45:00"
                 }
             }

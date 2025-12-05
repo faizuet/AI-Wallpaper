@@ -1,11 +1,10 @@
 import os
-import base64
 import requests
 from uuid import uuid4
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+import replicate
 
 from app.models import Wallpaper, WallpaperStatusEnum, User
 from app.core.database import get_db
@@ -14,7 +13,6 @@ from app.schemas import (
     WallpaperCreateSchema,
     WallpaperResponseSchema,
     WallpaperListSchema,
-    MessageResponse,
     WallpaperDeleteResponse,
 )
 from app.core.config import settings
@@ -27,57 +25,80 @@ router = APIRouter(prefix="/wallpapers", tags=["Wallpapers"])
 WALLPAPER_DIR = "static/wallpapers"
 os.makedirs(WALLPAPER_DIR, exist_ok=True)
 
-# Mapping UI size options to DeAPI resolution
+# Replicate client
+replicate_client = replicate.Client(api_token=settings.REPLICATE_API_TOKEN)
+
+# Size mapping for Replicate
 SIZE_MAP = {
-    "1:1": (512, 512),
-    "2:3 Portrait": (512, 768),
-    "2:3 Landscape": (768, 512)
+    "1:1": (1024, 1024),
+    "2:3 Portrait": (832, 1216),
+    "2:3 Landscape": (1216, 832),
 }
 
-#  Correct deAPI endpoints
-DEAPI_IMAGE_URL = "https://deapi.ai/api/v1/txt2img?model=Flux1schnell"
-DEAPI_TEXT_URL = "https://deapi.ai/models/textgen/playground"
-
-HEADERS = {
-    "Authorization": f"Bearer {settings.DEAPI_API_KEY}",
-    "Content-Type": "application/json"
+# Optional style enhancements
+STYLE_SUFFIXES = {
+    "Colorful": ", vibrant colors, highly detailed, 8k quality",
+    "3D Render": ", CGI, 3D render, octane lighting, product-shot quality",
+    "3D Cinematic": ", cinematic lighting, volumetric fog, ray tracing, movie-quality",
+    "Photorealistic": ", ultra photorealistic, professional photography, sharp details, natural lighting",
+    "Illustration": ", digital illustration, concept art style, clean linework",
+    "Oil Painting": ", oil painting style, textured brushstrokes, fine art look",
+    "Watercolor": ", watercolor painting style, soft edges, artistic wash textures",
+    "Cyberpunk": ", neon lights, futuristic glow, dystopian atmosphere, high contrast",
+    "Fantasy": ", magical atmosphere, epic fantasy style, mystical lighting",
+    "Anime": ", anime style, expressive eyes, cel-shaded, vibrant colors",
+    "Manga": ", manga style, dramatic composition, black-and-white inked lines",
+    "Cartoon": ", cartoon style, bold outlines, smooth shading, playful character design",
+    "Cartoon (Vector)": ", vector cartoon style, bold outlines, flat colors, Disney-like aesthetic",
+    "Disney/Pixar": ", Pixar-style 3D animation, soft lighting, family-friendly character design",
+    "Chibi": ", chibi style, cute small characters, oversized expressive eyes",
+    "Kawaii": ", kawaii style, super cute, pastel colors, soft rounded shapes",
+    "Cel-Shading": ", cel-shaded animation style, bold shadows, clean color blocks",
+    "Comic Strip": ", comic strip style, halftone shading, bold ink lines, retro comic look",
+    "Steampunk": ", Victorian industrial style, brass textures, gears, retro-futuristic",
 }
 
 # ---------------------------
-# AI Generation Function
+#  Generate Wallpaper
 # ---------------------------
-def generate_wallpaper_image(wallpaper_id: str, prompt: str, size: str, style: str, db: Session):
+def generate_wallpaper_image(
+    wallpaper_id: str, prompt: str, size: str, style: str, db: Session
+):
     wallpaper = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
     if not wallpaper:
         return
 
     try:
-        full_prompt = f"{prompt}, {style}" if style else prompt
-        width, height = SIZE_MAP.get(size, (512, 512))
+        width, height = SIZE_MAP.get(size, (1024, 1024))
+        style_suffix = STYLE_SUFFIXES.get(style, "")
+        final_prompt = f"{prompt}{style_suffix}"
 
-        payload = {
-            "prompt": full_prompt,
-            "width": width,
-            "height": height,
-            "steps": 4,  # Flux1schnell is optimized for very few steps
-            "negative_prompt": ""
-        }
+        # Run Replicate model
+        output = replicate_client.run(
+            "black-forest-labs/flux-schnell",
+            input={
+                "prompt": final_prompt,
+                "width": width,
+                "height": height,
+                "num_outputs": 1,
+                "guidance": 3.5,
+                "num_inference_steps": 4,
+            },
+        )
 
-        response = requests.post(DEAPI_IMAGE_URL, json=payload, headers=HEADERS)
-
-        if response.status_code != 200:
-            print("DeAPI ERROR:", response.text)
+        if not output or not isinstance(output, list):
+            print("Unexpected Replicate output:", output)
             wallpaper.status = WallpaperStatusEnum.failed
             db.commit()
             return
 
-        data = response.json()
-        # deAPI returns base64 image(s) under "images"
-        image_data = data["images"][0]
-        image_bytes = base64.b64decode(image_data)
+        # Replicate returns file objects
+        file_obj = output[0]
+        image_bytes = file_obj.read()
 
-        filename = f"{uuid4()}.png"
+        filename = f"{uuid4()}.webp"
         image_path = os.path.join(WALLPAPER_DIR, filename)
+
         with open(image_path, "wb") as f:
             f.write(image_bytes)
 
@@ -85,21 +106,26 @@ def generate_wallpaper_image(wallpaper_id: str, prompt: str, size: str, style: s
         wallpaper.status = WallpaperStatusEnum.completed
         db.commit()
 
+        print(" Wallpaper saved:", filename)
+
     except Exception as e:
-        print("AI generation failed:", e)
+        print(" Replicate generation failed:", e)
         wallpaper.status = WallpaperStatusEnum.failed
         db.commit()
+
 
 # ---------------------------
 # Create Wallpaper Request
 # ---------------------------
-@router.post("/", response_model=WallpaperResponseSchema, summary="Submit wallpaper generation request")
+@router.post(
+    "/", response_model=WallpaperResponseSchema, summary="Submit wallpaper generation request"
+)
 def create_wallpaper(
     payload: WallpaperCreateSchema,
     background_tasks: BackgroundTasks,
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None
+    request: Request = None,
 ):
     user = db.query(User).filter(User.email == token["sub"]).first()
     if not user:
@@ -110,7 +136,7 @@ def create_wallpaper(
         prompt=payload.prompt,
         size=payload.size,
         style=payload.style,
-        status=WallpaperStatusEnum.pending
+        status=WallpaperStatusEnum.pending,
     )
     db.add(wallpaper)
     db.commit()
@@ -122,27 +148,29 @@ def create_wallpaper(
         payload.prompt,
         payload.size,
         payload.style,
-        db
+        db,
     )
-
-    if wallpaper.image_url:
-        wallpaper.full_image_url = f"{request.base_url}static/wallpapers/{wallpaper.image_url}"
 
     return wallpaper
 
+
 # ---------------------------
-# List All Wallpapers for User
+# List Wallpapers
 # ---------------------------
-@router.get("/", response_model=WallpaperListSchema, summary="List all wallpapers for current user")
+@router.get(
+    "/", response_model=WallpaperListSchema, summary="List all wallpapers for current user"
+)
 def list_wallpapers(
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None
+    request: Request = None,
 ):
-    wallpapers = db.query(Wallpaper)\
-        .filter(Wallpaper.user_id == token["user_id"])\
-        .order_by(Wallpaper.created_at.desc())\
+    wallpapers = (
+        db.query(Wallpaper)
+        .filter(Wallpaper.user_id == token["user_id"])
+        .order_by(Wallpaper.created_at.desc())
         .all()
+    )
 
     for wp in wallpapers:
         if wp.image_url:
@@ -150,15 +178,20 @@ def list_wallpapers(
 
     return {"wallpapers": wallpapers}
 
+
 # ---------------------------
 # Delete Wallpaper
 # ---------------------------
-@router.delete("/{wallpaper_id}", response_model=WallpaperDeleteResponse, summary="Delete a wallpaper")
+@router.delete(
+    "/{wallpaper_id}",
+    response_model=WallpaperDeleteResponse,
+    summary="Delete a wallpaper",
+)
 def delete_wallpaper(
     wallpaper_id: str,
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None
+    request: Request = None,
 ):
     wallpaper = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
     if not wallpaper or wallpaper.user_id != token["user_id"]:
@@ -171,8 +204,12 @@ def delete_wallpaper(
         style=wallpaper.style,
         status=wallpaper.status,
         image_url=wallpaper.image_url,
-        full_image_url=f"{request.base_url}static/wallpapers/{wallpaper.image_url}" if wallpaper.image_url else None,
-        created_at=wallpaper.created_at
+        full_image_url=(
+            f"{request.base_url}static/wallpapers/{wallpaper.image_url}"
+            if wallpaper.image_url
+            else None
+        ),
+        created_at=wallpaper.created_at,
     )
 
     if wallpaper.image_url:
@@ -185,43 +222,6 @@ def delete_wallpaper(
 
     return {
         "message": "Wallpaper deleted successfully",
-        "deleted_wallpaper": deleted_info
+        "deleted_wallpaper": deleted_info,
     }
-
-# ---------------------------
-# Get One AI Prompt Suggestion
-# ---------------------------
-@router.get("/suggestion", response_model=str, summary="Get one AI-generated prompt suggestion")
-def get_prompt_suggestion(style: str):
-    """
-    Generate a single creative wallpaper prompt using deAPI textgen.
-    """
-    try:
-        headers = {"Authorization": f"Bearer {settings.DEAPI_API_KEY}"}
-
-        prompt_text = (
-            f"You are a creative assistant for an AI wallpaper app. "
-            f"Give me exactly one short, imaginative prompt for generating a wallpaper "
-            f"in the style of {style}. Keep it one sentence, visually descriptive."
-        )
-
-        payload = {
-            "prompt": prompt_text,
-            "max_output_tokens": 100,
-            "temperature": 0.9
-        }
-
-        response = requests.post(DEAPI_TEXT_URL, json=payload, headers=headers)
-
-        if response.status_code != 200:
-            print("DeAPI TextGen failed:", response.text)
-            return f"A surreal landscape in {style} style"
-
-        data = response.json()
-        suggestion = data.get("output_text") or f"A surreal landscape in {style} style"
-        return suggestion.strip()
-
-    except Exception as e:
-        print("Suggestion generation failed:", e)
-        return f"A surreal landscape in {style} style"
 

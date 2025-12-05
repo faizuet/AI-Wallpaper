@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     MAIL_TLS: bool = True
     MAIL_SSL: bool = False
 
-    # DeAPI / DeepInfra key
-    DEAPI_API_KEY: str
+    # Replicate API Key
+    REPLICATE_API_TOKEN: str
 
     # App
     APP_ENV: str = "development"

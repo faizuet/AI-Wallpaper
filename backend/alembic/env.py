@@ -15,7 +15,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import your models and metadata
-from app.models import Base  # adjust path if needed
+from app.models import Base
 target_metadata = Base.metadata
 
 # Override sqlalchemy.url from .env
@@ -37,7 +37,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,  # detect column type changes in offline mode too
+        compare_type=True,
     )
 
     with context.begin_transaction():
