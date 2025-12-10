@@ -13,3 +13,11 @@ pydantic>=2.0,<3.0
 pydantic-settings
 email-validator
 fastapi-mail
+
+#  Required for Google OAuth
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+
+#  Required for Replicate API
+replicate

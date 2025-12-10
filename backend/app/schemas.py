@@ -1,7 +1,6 @@
 import re
-import uuid
 from datetime import datetime
-from fastapi import Form
+from fastapi import Form, File, UploadFile
 from fastapi.exceptions import RequestValidationError
 from pydantic import (
     BaseModel,
@@ -10,30 +9,30 @@ from pydantic import (
     conint,
     field_validator,
     model_validator,
-    ValidationError,
     StringConstraints,
-    validator,
 )
 from typing import Optional, Annotated, List
 from uuid import UUID
-from app.models import WallpaperStatusEnum
+
 
 # ---------------------------
 # Shared Password Validation Mixin
 # ---------------------------
 class PasswordMixin(BaseModel):
-    """Mixin for password validation with confirmation."""
-    password: Annotated[str, StringConstraints(min_length=8)] = Field(
-        ..., description="Password must be at least 8 characters"
-    )
+    password: Annotated[str, StringConstraints(min_length=8)]
     confirm_password: str
 
     @field_validator("password", mode="before")
     def validate_password(cls, value: str):
+        if not isinstance(value, str):
+            raise ValueError("Password must be a string")
+
         if not re.search(r"[A-Za-z]", value):
             raise ValueError("Password must contain at least one letter")
+
         if not re.search(r"\d", value):
             raise ValueError("Password must contain at least one number")
+
         return value
 
     @model_validator(mode="after")
@@ -44,21 +43,20 @@ class PasswordMixin(BaseModel):
 
 
 # ---------------------------
-# Signup Schema
+# Signup Schema (JSON + File)
 # ---------------------------
 class SignupSchema(PasswordMixin):
     username: Annotated[str, StringConstraints(min_length=3, max_length=50)]
     email: EmailStr
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "username": "faiz",
-                "email": "faiz@example.com",
-                "password": "StrongPass123",
-                "confirm_password": "StrongPass123",
-            }
-        }
+
+# Allowed image MIME types
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/jpg",
+}
 
 
 # ---------------------------
@@ -69,64 +67,46 @@ def SignupForm(
     email: EmailStr = Form(...),
     password: str = Form(...),
     confirm_password: str = Form(...),
+    profile_image: UploadFile = File(...)
 ) -> SignupSchema:
-    try:
-        return SignupSchema(
-            username=username,
-            email=email,
-            password=password,
-            confirm_password=confirm_password,
-        )
-    except ValidationError as e:
-        raise RequestValidationError(e.errors())
+
+    # Validate username
+    if len(username.strip()) < 3:
+        raise RequestValidationError([
+            {"loc": ["username"], "msg": "Username must be at least 3 characters long", "type": "value_error"}
+        ])
+
+    # Validate file type
+    if profile_image.content_type not in ALLOWED_IMAGE_TYPES:
+        raise RequestValidationError([
+            {
+                "loc": ["profile_image"],
+                "msg": "Invalid file type. Only JPEG, PNG, JPG, and WEBP images are allowed.",
+                "type": "value_error.file_type",
+            }
+        ])
+
+    return SignupSchema(
+        username=username,
+        email=email,
+        password=password,
+        confirm_password=confirm_password,
+    )
 
 
 # ---------------------------
-# Reset Password Schema
+# Reset Password Schema (JSON)
 # ---------------------------
 class ResetPasswordSchema(PasswordMixin):
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "password": "NewStrongPass123",
-                "confirm_password": "NewStrongPass123",
-            }
-        }
+    pass
 
 
 # ---------------------------
-# Reset Code Schema
+# Reset Code Schema (JSON)
 # ---------------------------
 class ResetCodeSchema(PasswordMixin):
     email: EmailStr
     code: conint(ge=100000, le=999999)
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "faiz@example.com",
-                "code": 654321,
-                "password": "NewStrongPass123",
-                "confirm_password": "NewStrongPass123",
-            }
-        }
-
-
-def ResetCodeForm(
-    email: EmailStr = Form(...),
-    code: int = Form(...),
-    password: str = Form(...),
-    confirm_password: str = Form(...),
-) -> ResetCodeSchema:
-    try:
-        return ResetCodeSchema(
-            email=email,
-            code=code,
-            password=password,
-            confirm_password=confirm_password,
-        )
-    except ValidationError as e:
-        raise RequestValidationError(e.errors())
 
 
 # ---------------------------
@@ -136,10 +116,11 @@ class LoginSchema(BaseModel):
     email: EmailStr
     password: str
 
-    class Config:
-        json_schema_extra = {
-            "example": {"email": "faiz@example.com", "password": "StrongPass123"}
-        }
+    @field_validator("password")
+    def validate_password(cls, v):
+        if not v.strip():
+            raise ValueError("Password cannot be empty")
+        return v
 
 
 # ---------------------------
@@ -147,9 +128,6 @@ class LoginSchema(BaseModel):
 # ---------------------------
 class ForgotPasswordSchema(BaseModel):
     email: EmailStr
-
-    class Config:
-        json_schema_extra = {"example": {"email": "faiz@example.com"}}
 
 
 # ---------------------------
@@ -159,43 +137,25 @@ class CodeVerifySchema(BaseModel):
     email: EmailStr
     code: conint(ge=100000, le=999999)
 
-    class Config:
-        json_schema_extra = {"example": {"email": "faiz@example.com", "code": 123456}}
 
-
+# ---------------------------
+# Resend Code Schema
+# ---------------------------
 class ResendCodeSchema(BaseModel):
     email: EmailStr
 
 
 # ---------------------------
-# Update Password Schema
+# Update Password Schema (JSON)
 # ---------------------------
 class UpdatePasswordSchema(PasswordMixin):
     old_password: str
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "old_password": "StrongPass123",
-                "password": "NewStrongPass123",
-                "confirm_password": "NewStrongPass123",
-            }
-        }
-
-
-def UpdatePasswordForm(
-    old_password: str = Form(...),
-    password: str = Form(...),
-    confirm_password: str = Form(...),
-) -> UpdatePasswordSchema:
-    try:
-        return UpdatePasswordSchema(
-            old_password=old_password,
-            password=password,
-            confirm_password=confirm_password,
-        )
-    except ValidationError as e:
-        raise RequestValidationError(e.errors())
+    @field_validator("old_password")
+    def validate_old_password(cls, v):
+        if not v.strip():
+            raise ValueError("Old password cannot be empty")
+        return v
 
 
 # ---------------------------
@@ -207,17 +167,15 @@ class UpdateProfileSchema(BaseModel):
     phone_number: Optional[
         Annotated[str, StringConstraints(pattern=r"^\+?\d{7,15}$")]
     ] = None
-    username: Optional[Annotated[str, StringConstraints(min_length=3, max_length=50)]] = None
+    username: Optional[
+        Annotated[str, StringConstraints(min_length=3, max_length=50)]
+    ] = None
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "first_name": "first_Name",
-                "last_name": "last_name",
-                "phone_number": "+925551234567",
-                "username": "Name_updated"
-            }
-        }
+    @model_validator(mode="after")
+    def validate_at_least_one_field(cls, values):
+        if not any(values.values()):
+            raise ValueError("At least one field must be provided for update")
+        return values
 
 
 # ---------------------------
@@ -260,41 +218,23 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     refresh_token: Optional[str] = None
 
+
 # ---------------------------
 # Wallpaper Schemas
 # ---------------------------
-
 class WallpaperCreateSchema(BaseModel):
-    prompt: str = Field(
-        ...,
-        min_length=3,
-        max_length=255,
-        description="Text prompt describing the wallpaper to generate (max 255 characters)"
-    )
-    size: str = Field(
-        ...,
-        description="Image size option (e.g. '1:1', '2:3 Portrait', '2:3 Landscape')"
-    )
-    style: str = Field(
-        ...,
-        description="Art style option (e.g. 'Colorful', '3D Render', 'Nature')"
-    )
+    prompt: str = Field(..., min_length=3, max_length=255)
+    size: str
+    style: str
 
-    @validator("prompt")
+    @field_validator("prompt")
     def validate_prompt_length(cls, v):
+        if len(v.strip()) < 3:
+            raise ValueError("Prompt must be at least 3 characters long")
         if len(v) > 255:
-            # This triggers your custom RequestValidationError handler
             raise ValueError("Prompt is too long. Please keep it under 255 characters.")
         return v
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "prompt": "A panda in a leather suit",
-                "size": "2:3 Portrait",
-                "style": "3D Render"
-            }
-        }
 
 class WallpaperResponseSchema(BaseModel):
     id: UUID
@@ -303,44 +243,25 @@ class WallpaperResponseSchema(BaseModel):
     style: str
     created_at: datetime
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "uuid-string-here",
-                "prompt": "A panda in a leather suit",
-                "size": "2:3 Portrait",
-                "style": "3D Render",
-                "status": "completed",
-                "created_at": "2025-11-27T11:45:00"
-            }
-        }
-
 
 class WallpaperListSchema(BaseModel):
     wallpapers: List[WallpaperResponseSchema]
 
 
 class WallpaperDeleteResponse(BaseModel):
-    message: str = Field(
-        ...,
-        description="Confirmation message after deletion"
-    )
-    deleted_wallpaper: Optional[WallpaperResponseSchema] = Field(
-        None,
-        description="Details of the deleted wallpaper"
-    )
+    message: str
+    deleted_wallpaper: Optional[WallpaperResponseSchema] = None
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "message": "Wallpaper deleted successfully",
-                "deleted_wallpaper": {
-                    "id": "uuid-string-here",
-                    "prompt": "A panda in a leather suit",
-                    "size": "2:3 Portrait",
-                    "style": "3D Render",
-                    "status": "completed",
-                    "created_at": "2025-11-27T11:45:00"
-                }
-            }
-        }
+
+class AISuggestionSchema(BaseModel):
+    prompt: str
+
+    @field_validator("prompt")
+    def validate_prompt(cls, v):
+        if not v.strip():
+            raise ValueError("Prompt cannot be empty")
+        return v
+
+
+class AISuggestionResponse(BaseModel):
+    suggestion: str

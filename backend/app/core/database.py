@@ -8,7 +8,7 @@ engine = create_engine(
     echo=False
 )
 
-# Session factory (used per request in FastAPI)
+# Session factory
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,

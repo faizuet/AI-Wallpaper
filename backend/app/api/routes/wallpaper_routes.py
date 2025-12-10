@@ -1,9 +1,9 @@
 import os
-import requests
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse
 import replicate
 
 from app.models import Wallpaper, WallpaperStatusEnum, User
@@ -14,28 +14,24 @@ from app.schemas import (
     WallpaperResponseSchema,
     WallpaperListSchema,
     WallpaperDeleteResponse,
+    AISuggestionSchema,
+    AISuggestionResponse,
 )
 from app.core.config import settings
 
-# ---------------------------
-# Setup
-# ---------------------------
 router = APIRouter(prefix="/wallpapers", tags=["Wallpapers"])
 
 WALLPAPER_DIR = "static/wallpapers"
 os.makedirs(WALLPAPER_DIR, exist_ok=True)
 
-# Replicate client
 replicate_client = replicate.Client(api_token=settings.REPLICATE_API_TOKEN)
 
-# Size mapping for Replicate
 SIZE_MAP = {
     "1:1": (1024, 1024),
     "2:3 Portrait": (832, 1216),
     "2:3 Landscape": (1216, 832),
 }
 
-# Optional style enhancements
 STYLE_SUFFIXES = {
     "Colorful": ", vibrant colors, highly detailed, 8k quality",
     "3D Render": ", CGI, 3D render, octane lighting, product-shot quality",
@@ -58,12 +54,11 @@ STYLE_SUFFIXES = {
     "Steampunk": ", Victorian industrial style, brass textures, gears, retro-futuristic",
 }
 
+
 # ---------------------------
-#  Generate Wallpaper
+# Background Task: Generate Wallpaper
 # ---------------------------
-def generate_wallpaper_image(
-    wallpaper_id: str, prompt: str, size: str, style: str, db: Session
-):
+def generate_wallpaper_image(wallpaper_id: str, prompt: str, size: str, style: str, db: Session):
     wallpaper = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
     if not wallpaper:
         return
@@ -73,7 +68,6 @@ def generate_wallpaper_image(
         style_suffix = STYLE_SUFFIXES.get(style, "")
         final_prompt = f"{prompt}{style_suffix}"
 
-        # Run Replicate model
         output = replicate_client.run(
             "black-forest-labs/flux-schnell",
             input={
@@ -87,12 +81,10 @@ def generate_wallpaper_image(
         )
 
         if not output or not isinstance(output, list):
-            print("Unexpected Replicate output:", output)
             wallpaper.status = WallpaperStatusEnum.failed
             db.commit()
             return
 
-        # Replicate returns file objects
         file_obj = output[0]
         image_bytes = file_obj.read()
 
@@ -106,30 +98,51 @@ def generate_wallpaper_image(
         wallpaper.status = WallpaperStatusEnum.completed
         db.commit()
 
-        print(" Wallpaper saved:", filename)
-
-    except Exception as e:
-        print(" Replicate generation failed:", e)
+    except Exception:
         wallpaper.status = WallpaperStatusEnum.failed
         db.commit()
 
 
 # ---------------------------
-# Create Wallpaper Request
+# AI Suggestion
 # ---------------------------
-@router.post(
-    "/", response_model=WallpaperResponseSchema, summary="Submit wallpaper generation request"
-)
+@router.post("/suggest", response_model=AISuggestionResponse)
+def suggest_prompt(
+    payload: AISuggestionSchema,
+    token: dict = Depends(jwt_utils.get_current_user),
+):
+    system_prompt = (
+        "You enhance short prompts for image generation. "
+        "Rewrite the user's prompt to be more detailed, vivid, and descriptive. "
+        "Keep it short (1–2 sentences). Do not add styles unless the user mentions them."
+    )
+
+    response = replicate_client.run(
+        "meta/meta-llama-3-70b-instruct",
+        input={
+            "prompt": f"{system_prompt}\nUser prompt: {payload.prompt}\nEnhanced prompt:",
+            "temperature": 0.6,
+            "max_tokens": 120,
+        },
+    )
+
+    enhanced = "".join(response).strip()
+    return AISuggestionResponse(suggestion=enhanced)
+
+
+# ---------------------------
+# Create Wallpaper
+# ---------------------------
+@router.post("/", response_model=WallpaperResponseSchema)
 def create_wallpaper(
     payload: WallpaperCreateSchema,
     background_tasks: BackgroundTasks,
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None,
 ):
     user = db.query(User).filter(User.email == token["sub"]).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(404, "User not found")
 
     wallpaper = Wallpaper(
         user_id=user.id,
@@ -155,19 +168,62 @@ def create_wallpaper(
 
 
 # ---------------------------
+# Recreate Wallpaper
+# ---------------------------
+@router.post("/{wallpaper_id}/recreate", response_model=WallpaperResponseSchema)
+def recreate_wallpaper(
+    wallpaper_id: str,
+    background_tasks: BackgroundTasks,
+    token: dict = Depends(jwt_utils.get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.email == token["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    original = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
+    if not original or original.user_id != user.id:
+        raise HTTPException(404, "Wallpaper not found")
+
+    new_wallpaper = Wallpaper(
+        user_id=user.id,
+        prompt=original.prompt,
+        size=original.size,
+        style=original.style,
+        status=WallpaperStatusEnum.pending,
+    )
+    db.add(new_wallpaper)
+    db.commit()
+    db.refresh(new_wallpaper)
+
+    background_tasks.add_task(
+        generate_wallpaper_image,
+        new_wallpaper.id,
+        original.prompt,
+        original.size,
+        original.style,
+        db,
+    )
+
+    return new_wallpaper
+
+
+# ---------------------------
 # List Wallpapers
 # ---------------------------
-@router.get(
-    "/", response_model=WallpaperListSchema, summary="List all wallpapers for current user"
-)
+@router.get("/", response_model=WallpaperListSchema)
 def list_wallpapers(
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
     request: Request = None,
 ):
+    user = db.query(User).filter(User.email == token["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
     wallpapers = (
         db.query(Wallpaper)
-        .filter(Wallpaper.user_id == token["user_id"])
+        .filter(Wallpaper.user_id == user.id)
         .order_by(Wallpaper.created_at.desc())
         .all()
     )
@@ -182,33 +238,26 @@ def list_wallpapers(
 # ---------------------------
 # Delete Wallpaper
 # ---------------------------
-@router.delete(
-    "/{wallpaper_id}",
-    response_model=WallpaperDeleteResponse,
-    summary="Delete a wallpaper",
-)
+@router.delete("/{wallpaper_id}", response_model=WallpaperDeleteResponse)
 def delete_wallpaper(
     wallpaper_id: str,
     token: dict = Depends(jwt_utils.get_current_user),
     db: Session = Depends(get_db),
     request: Request = None,
 ):
+    user = db.query(User).filter(User.email == token["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
     wallpaper = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
-    if not wallpaper or wallpaper.user_id != token["user_id"]:
-        raise HTTPException(status_code=404, detail="Wallpaper not found")
+    if not wallpaper or wallpaper.user_id != user.id:
+        raise HTTPException(404, "Wallpaper not found")
 
     deleted_info = WallpaperResponseSchema(
         id=wallpaper.id,
         prompt=wallpaper.prompt,
         size=wallpaper.size,
         style=wallpaper.style,
-        status=wallpaper.status,
-        image_url=wallpaper.image_url,
-        full_image_url=(
-            f"{request.base_url}static/wallpapers/{wallpaper.image_url}"
-            if wallpaper.image_url
-            else None
-        ),
         created_at=wallpaper.created_at,
     )
 
@@ -224,4 +273,35 @@ def delete_wallpaper(
         "message": "Wallpaper deleted successfully",
         "deleted_wallpaper": deleted_info,
     }
+
+# ---------------------------
+# Download Wallpaper
+# ---------------------------
+@router.get("/{wallpaper_id}/download")
+def download_wallpaper(
+    wallpaper_id: str,
+    token: dict = Depends(jwt_utils.get_current_user),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.email == token["sub"]).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    wallpaper = db.query(Wallpaper).filter(Wallpaper.id == wallpaper_id).first()
+    if not wallpaper or wallpaper.user_id != user.id:
+        raise HTTPException(404, "Wallpaper not found")
+
+    if not wallpaper.image_url:
+        raise HTTPException(400, "Wallpaper image not generated yet")
+
+    file_path = os.path.join(WALLPAPER_DIR, wallpaper.image_url)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(404, "Image file not found on server")
+
+    return FileResponse(
+        file_path,
+        media_type="image/webp",
+        filename=wallpaper.image_url
+    )
 

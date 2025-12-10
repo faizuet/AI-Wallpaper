@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from fastapi import APIRouter
+
 from app.api.routes import auth_routes, user_routes, wallpaper_routes
 from app.core.error_handlers import add_exception_handlers
 
@@ -27,7 +29,13 @@ app.add_middleware(
 # Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Routers
-app.include_router(auth_routes.router)
-app.include_router(user_routes.router)
-app.include_router(wallpaper_routes.router)
+#  Create API v1 router
+api_v1_router = APIRouter(prefix="/api/v1")
+
+#  Include all routers inside /api/v1
+api_v1_router.include_router(auth_routes.router)
+api_v1_router.include_router(user_routes.router)
+api_v1_router.include_router(wallpaper_routes.router)
+
+app.include_router(api_v1_router)
+
